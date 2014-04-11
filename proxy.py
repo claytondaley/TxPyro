@@ -120,8 +120,9 @@ class PyroPatientProxy(Proxy):
     To minimize the amount of recoding necessary, we hijack all calls to __pyroCreateConnection, reroute them to
     _pyroReconnect and use the original __pyroCreateConnection by reassigning it to _PyroConnect.
     """
-    def __init__(self, uri):
+    def __init__(self, uri, retries=43200):
         self.ns_found = False
+        self.retries = retries
         super(PyroPatientProxy, self).__init__(uri)
 
     _PyroConnect = Proxy._Proxy__pyroCreateConnection
@@ -133,10 +134,11 @@ class PyroPatientProxy(Proxy):
         uriCopy = URI(self._pyroUri)
         return PyroPatientProxy(uriCopy)
 
-    def _pyroReconnect(self, tries=100000000):
+    def _pyroReconnect(self):
         """(re)connect the proxy to the daemon containing the pyro object which the proxy is for"""
         log.info("(Re)connecting proxy to the daemon for %s" % self._pyroUri)
         self._pyroRelease()
+        tries = self.retries
         while tries:
             try:
                 self._PyroConnect()
