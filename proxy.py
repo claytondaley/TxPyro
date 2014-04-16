@@ -44,9 +44,10 @@ class _PyroDeferredMethod(_AsyncRemoteMethod):
             reactor.callLater(0, d.callback, None)
             return response
 
-        # noinspection PyUnusedLocal
-        def get_future_value(from_reactor_not_usable):
+        def get_future_value(_):
             return result.value
+
+        d.addCallback(get_future_value)
 
         result = _FutureResultErrCallback()
         result.then(trigger_deferred)
@@ -54,7 +55,6 @@ class _PyroDeferredMethod(_AsyncRemoteMethod):
         thread.setDaemon(True)
         thread.start()
 
-        d.addCallback(get_future_value)
         return d
 
     def __asynccall(self, asyncresult, args, kwargs):
