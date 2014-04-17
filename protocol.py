@@ -216,18 +216,16 @@ class Pyro4Protocol(Protocol):
                 d.addCallback(self._build_response)
                 d.addCallback(self._send_response)
 
-        elif self.state == "response" and len(self.data) > 0:
+        if self.state == "response" and len(self.data) > 0:
             error_msg = "data received while in response state" % \
                         (self.request.data_size + self.request.annotations_size, Pyro4.config.MAX_MESSAGE_SIZE)
             self._return_error(errors.ProtocolError(error_msg))
 
-        elif self.state == "blocked":
+        if self.state == "blocked":
             # Waiting on a ONEWAY call (with guaranteed execution order) to complete.  When it completes, the system
             # will reset itself to accept the next call.
             pass
 
-        else:
-            raise errors.ProtocolError("Protocol in invalid state.")
 
     @inlineCallbacks
     def _pyro_remote_call(self, msg):
@@ -442,6 +440,26 @@ class Pyro4ServerFactory(Factory):
         protocol.state = "server"
         protocol.required_message_types = [message.MSG_INVOKE, message.MSG_PING]
         return protocol
+
+    def setAddress(self, host, port):
+        self.locationStr = "%s:%s" % (host, port)
+
+    def uriFor(self, objectOrId=None, nat=True):
+        """
+        Get a URI for the given object (or object id) from this daemon.
+        Only a daemon can hand out proper uris because the access location is
+        contained in them.
+        Note that unregistered objects cannot be given an uri, but unregistered
+        object names can (it's just a string we're creating in that case).
+        If nat is set to False, the configured NAT address (if any) is ignored and it will
+        return an URI for the internal address.
+        """
+        if not isinstance(objectOrId, basestring):
+            objectOrId=getattr(objectOrId, "_pyroId", None)
+            if objectOrId is None:
+                raise errors.DaemonError("object isn't registered")
+        loc = self.locationStr
+        return Pyro4.URI("PYRO:%s@%s" % (objectOrId, loc))
 
 
 # noinspection PyPep8Naming
