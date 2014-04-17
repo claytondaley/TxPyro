@@ -36,7 +36,7 @@ class Pyro4NSClientFactory(ClientFactory):
     def __init__(self):
         pass
 
-    def buildProtocol(self, addr):
+    def buildProtocol(self, addr=None):
         """Create an instance of a subclass of Protocol.
 
         The returned instance will handle input on an incoming server
@@ -45,7 +45,8 @@ class Pyro4NSClientFactory(ClientFactory):
 
         @param addr: an object implementing L{twisted.internet.interfaces.IAddress}
         """
-        ns_host, ns_port = addr
+        if addr is not None:
+            ns_host, ns_port = addr
         # Needs rewritten to run asynchronously
         proxy = Pyro4.locateNS(ns_host, ns_port)
         proxy.__dict__['_factory'] = self
@@ -57,16 +58,16 @@ class Pyro4NSClientFactory(ClientFactory):
 
 class Pyro4Protocol(Protocol):
     def __init__(self, as_server=True):
-        self.required_message_types = required_message_types
         self.request = None
         self.response_flags = 0
         self.data = ''
         if as_server:
             self.state = "server"
+            self.required_message_types = [message.MSG_INVOKE, message.MSG_PING]
         else:
+            self.required_message_types = [message.MSG_CONNECTOK]
             raise NotImplementedError("Client functionality not yet implemented in the protocol.  Use " +
                                       "proxy.PyroDeferredService for a Deferred-generating asynchronous Pyro4 client.")
-            self.state = "connect"
 
     def connectionMade(self):
         """
@@ -93,10 +94,11 @@ class Pyro4Protocol(Protocol):
         to route received data.  Because state data need not persist across connections (unlike state information in
         many applications), it is attached to the Protocol.  These states are:
 
-         - header (default):  waiting on enough data to parse a message header and respond accordingly
+         - server:  indicates that a handshake will be required upon connection
+         - header:  waiting on enough data to parse a message header and respond accordingly (idle state for servers)
          - annotations:  header parsed, waiting on amount of annotation data requested in header
          - data:  header parsed, waiting on amount of data requested in header
-         - response:  we owe a response
+         - response:  the other end is waiting for data from us (idle state for clients)
         """
         log.debug("Handling %d bytes of data" % len(data))
         self.data += data
@@ -167,6 +169,9 @@ class Pyro4Protocol(Protocol):
                 raise NotImplementedError("No action provided for MSG_CONNECT")
 
             elif self.request.type == message.MSG_CONNECTOK:
+                # We only reach this spot if it is a valid message type so we're in client handshake mode.  Update
+                # protocol to support client __call__ execution (i.e. invocation)
+                self.required_message_types = [message.MSG_CONNECTOK]
                 raise NotImplementedError("No action provided for MSG_CONNECTOK")
 
             elif self.request.type == message.MSG_CONNECTFAIL:
@@ -186,17 +191,21 @@ class Pyro4Protocol(Protocol):
                 # Trigger callback with data or raise exception
                 raise NotImplementedError("No action provided for MSG_RESULT")
 
+# IF A ONEWAY CALL IS IN PROCESS, DO WE NEED TO GUARANTEE EXECUTION ORDER? #############################################
             if self.request.flags & Pyro4.message.FLAGS_ONEWAY:
                 log.debug("... ONEWAY request, not building response.")
-                # If the previous call was oneway, it might be immediately followed by another message so we need to
-                # reset the Protocol state
 
                 def reraise(response):
                     if isinstance(response, Exception):
                         log.exception("ONEWAY call resulted in an exception: %s" % str(response))
                         raise response
                 d.addCallback(reraise)
+                # A ONEWAY call can be immediately followed by another message so we need to get back into the header
+                # state.  Note that it's also possible that self.data already contains a complete, second message.  In
+                # this case, no more data will be received to cause the message to be processed.  To ensure that this
+                # does not happen, we also need to schedule a call to this function (including no actual data).
                 self.reset()
+                reactor.callLater(0, self.dataReceived, '')
             else:
                 log.debug("... appending response callbaccks.")
                 # If the previous call was not oneway, we maintain state on the protocol
@@ -227,7 +236,7 @@ class Pyro4Protocol(Protocol):
         # Individual or batch
         log.debug("Searching for object %s" % str(objId))
         obj = self.factory.objectsById.get(objId)
-        log.debug("Found object with type %s" % (str(obj), str(type(obj))))
+        log.debug("Found object with type %s" % str(type(obj)))
         if msg.flags & Pyro4.message.FLAGS_BATCH:
             for method, vargs, kwargs in vargs:
                 log.debug("Running call %s with vargs %s and kwargs %s agasint object %s" %
@@ -370,7 +379,6 @@ class Pyro4Protocol(Protocol):
     def reset(self, reset_data=False):
         log.info("Protocol Reset")
         self.request = None
-        self.response = None
         self.state = "header"
         if reset_data:
             self.data = ''
@@ -379,10 +387,8 @@ class Pyro4Protocol(Protocol):
         pass
 
 
-class Pyro4ProtocolFactory(Factory):
-    protocol = Pyro4Protocol
-    objectsById = dict()
-
+# noinspection PyPep8Naming
+class Pyro4ClientFactory(Factory):
     def register(self, obj, objectId=None):
         """
         Register a Pyro object under the given id. Note that this object is now only
@@ -410,9 +416,10 @@ class Pyro4ProtocolFactory(Factory):
         self.objectsById[obj._pyroId] = obj
         log.info("Registered object of type %s to id %s" % (type(obj), str(obj._pyroId)))
         log.debug("objectsById is now %s" % pformat(self.objectsById))
-        return objectId
+        return self.uriFor(objectId)
 
     def buildProtocol(self, addr):
-        protocol = self.protocol([message.MSG_INVOKE, message.MSG_PING])
+        log.debug("Building protocol on address %s" % str(addr))
+        protocol = self.protocol()
         protocol.factory = self
         return protocol
