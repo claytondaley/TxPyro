@@ -35,10 +35,10 @@ To set up a connection to base, simply run:
     # As mentioned above, calls use the "transparent" proxy.method() syntax:
     deferred = deferred_generating_proxy.remote_method()
 
-Server: Pyro4Protocol & Pyro4ProtocolFactory
+Server: Pyro4Protocol & Pyro4ServerFactory
 ============================================
 
-The first migrated component only needed to use Pyro4 as a client.  To migrate additional components, I needed an implementation of Pyro4's server-side logic inside Twisted.  As is true of most synchronous code, minor modifications were not going to do the trick.  Instead, I rearranged existing Pyro4 logic (found mostly in Daemon.handleRequest and Message.recv) into Twisted's Protocol and Factory framework.  Since this code continues to use significant portions of the Pyro4 core, it's possible (but by no means certain) that it will support past and future Pyro4 versions.
+The first migrated component only needed to use Pyro4 as a client.  To migrate additional components, I needed an implementation of Pyro4's server-side logic inside Twisted.  As is true of most synchronous code, minor modifications were not going to do the trick.  Instead, I rearranged existing Pyro4 logic (found mostly in `Daemon.handleRequest` and `Message.recv`) into Twisted's Protocol and Factory framework.  Since this code continues to use significant portions of the Pyro4 core, it's possible (but by no means certain) that it will support past and future Pyro4 versions.
 
 twisted-pyro shares most of its syntax with Pyro4:
 
@@ -60,14 +60,6 @@ twisted-pyro shares most of its syntax with Pyro4:
 
 NOTE:  Unlike the standard Pyro4 syntax, Twisted permits a single ProtocolFactory to be attached to multiple Transports (e.g. ports attached to interfaces).  It also allows you to bind to all interfaces (host: 0.0.0.0).  This makes it difficult for the Factory to determine which host and port should be used in the URI.
 	
-Due to differences between synchronous and asynchronous approaches, twisted-pyro depends heavily on states to determine how data should be routed.  Because state data need not persist across connections (unlike state information in many applications), it is attached to the Protocol.  These states are:
-
- - server:  indicates that a handshake will be required upon connection
- - header (default):  waiting on enough data to parse a message header and respond accordingly
- - annotations:  header parsed, waiting on amount of annotation data requested in header
- - data:  header parsed, waiting on amount of data requested in header
- - response:  we owe a response
-
 Other:  PyroPatientProxy
 ========================
 
