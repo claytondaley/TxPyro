@@ -20,7 +20,7 @@ class Bar(object):
         log.info("Bar was pinged!!!")
         return "bong"
 
-factory = pyro.protocol.Pyro4ClientFactory()
+factory = pyro.protocol.Pyro4ServerFactory()
 tcp_port = pyro.protocol.reactor.listenTCP(5555, factory)
 # Because the reactor is responsible for the actual TCP connection, we
 # have to proactively route the data back into the factory to ensure

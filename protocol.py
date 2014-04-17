@@ -1,3 +1,5 @@
+from twisted.python.failure import Failure
+
 __author__ = 'Clayton Daley'
 
 import logging
@@ -49,25 +51,19 @@ class Pyro4NSClientFactory(ClientFactory):
             ns_host, ns_port = addr
         # Needs rewritten to run asynchronously
         proxy = Pyro4.locateNS(ns_host, ns_port)
-        proxy.__dict__['_factory'] = self
+        proxy._factory = self
         PyroDeferredService(proxy)
         # Get the server's host by leveraging the nameserver's IP address
-        self._service_host = Pyro4.socketutil.getInterfaceAddress(proxy.__dict__['_pyroUri'].host)
+        self._service_host = Pyro4.socketutil.getInterfaceAddress(proxy._pyroUri.host)
         return self.ns
 
 
 class Pyro4Protocol(Protocol):
-    def __init__(self, as_server=True):
+    def __init__(self):
         self.request = None
         self.response_flags = 0
         self.data = ''
-        if as_server:
-            self.state = "server"
-            self.required_message_types = [message.MSG_INVOKE, message.MSG_PING]
-        else:
-            self.required_message_types = [message.MSG_CONNECTOK]
-            raise NotImplementedError("Client functionality not yet implemented in the protocol.  Use " +
-                                      "proxy.PyroDeferredService for a Deferred-generating asynchronous Pyro4 client.")
+        self.state = 'uninitialized'
 
     def connectionMade(self):
         """
@@ -191,21 +187,26 @@ class Pyro4Protocol(Protocol):
                 # Trigger callback with data or raise exception
                 raise NotImplementedError("No action provided for MSG_RESULT")
 
-# IF A ONEWAY CALL IS IN PROCESS, DO WE NEED TO GUARANTEE EXECUTION ORDER? #############################################
             if self.request.flags & Pyro4.message.FLAGS_ONEWAY:
                 log.debug("... ONEWAY request, not building response.")
 
                 def reraise(response):
                     if isinstance(response, Exception):
                         log.exception("ONEWAY call resulted in an exception: %s" % str(response))
-                        raise response
+                        return Failure(response)
                 d.addCallback(reraise)
-                # A ONEWAY call can be immediately followed by another message so we need to get back into the header
-                # state.  Note that it's also possible that self.data already contains a complete, second message.  In
-                # this case, no more data will be received to cause the message to be processed.  To ensure that this
-                # does not happen, we also need to schedule a call to this function (including no actual data).
-                self.reset()
-                reactor.callLater(0, self.dataReceived, '')
+
+                # In Pyro4 core, the ONEWAY_THREADED option determines whether or not the execution order of ONEWAY
+                # calls is guaranteed. To replicate this behavior, we reference the same flag.
+                if Pyro4.config.ONEWAY_THREADED:
+                    self.reset()
+                else:
+                    self.state = "blocked"
+
+                    def process_next_message(response):
+                        self.reset()
+                        return response
+                    d.addBoth(process_next_message)
             else:
                 log.debug("... appending response callbaccks.")
                 # If the previous call was not oneway, we maintain state on the protocol
@@ -219,6 +220,14 @@ class Pyro4Protocol(Protocol):
             error_msg = "data received while in response state" % \
                         (self.request.data_size + self.request.annotations_size, Pyro4.config.MAX_MESSAGE_SIZE)
             self._return_error(errors.ProtocolError(error_msg))
+
+        elif self.state == "blocked":
+            # Waiting on a ONEWAY call (with guaranteed execution order) to complete.  When it completes, the system
+            # will reset itself to accept the next call.
+            pass
+
+        else:
+            raise errors.ProtocolError("Protocol in invalid state.")
 
     @inlineCallbacks
     def _pyro_remote_call(self, msg):
@@ -382,13 +391,21 @@ class Pyro4Protocol(Protocol):
         self.state = "header"
         if reset_data:
             self.data = ''
+        else:
+            # If we're not resetting the data, it's possible that self.data already contains the entire next message.
+            # In this case, no more data will be received to cause the message to be processed.  To ensure that this
+            # does not happen, we also need to schedule a call to dataReceived (including no actual data).
+            reactor.callLater(0, self.dataReceived, '')
 
     def connectionLost(self, reason):
         pass
 
 
 # noinspection PyPep8Naming
-class Pyro4ClientFactory(Factory):
+class Pyro4ServerFactory(Factory):
+    protocol = Pyro4Protocol
+    objectsById = dict()
+
     def register(self, obj, objectId=None):
         """
         Register a Pyro object under the given id. Note that this object is now only
@@ -422,4 +439,54 @@ class Pyro4ClientFactory(Factory):
         log.debug("Building protocol on address %s" % str(addr))
         protocol = self.protocol()
         protocol.factory = self
+        protocol.state = "server"
+        protocol.required_message_types = [message.MSG_INVOKE, message.MSG_PING]
         return protocol
+
+
+# noinspection PyPep8Naming
+class Pyro4ClientFactory(Factory):
+    protocol = Pyro4Protocol
+
+    def __init__(self):
+        raise NotImplementedError("Client functionality over Pyro4Protocol not yet supported.  " +
+                                  "Use twisted-pyro.proxy.PyroDeferredService instead.")
+
+    def register(self, obj, objectId=None):
+        """
+        Register a Pyro object under the given id. Note that this object is now only
+        known inside this daemon, it is not automatically available in a name server.
+        This method returns a URI for the registered object.
+        """
+        if objectId:
+            if not isinstance(objectId, basestring):
+                raise TypeError("objectId must be a string or None")
+        else:
+            objectId = "obj_" + uuid.uuid4().hex  # generate a new objectId
+        if hasattr(obj, "_pyroId") and obj._pyroId != "":  # check for empty string is needed for Cython
+            raise errors.DaemonError("object already has a Pyro id")
+        if objectId in self.objectsById:
+            raise errors.DaemonError("object already registered with that id")
+        # set some pyro attributes
+        obj._pyroId = objectId
+        obj._pyroDaemon = self
+        if Pyro4.config.AUTOPROXY:
+            # register a custom serializer for the type to automatically return proxies
+            # we need to do this for all known serializers
+            for ser in util._serializers.values():
+                ser.register_type_replacement(type(obj), pyroObjectToAutoProxy)
+        # register the object in the mapping
+        self.objectsById[obj._pyroId] = obj
+        log.info("Registered object of type %s to id %s" % (type(obj), str(obj._pyroId)))
+        log.debug("objectsById is now %s" % pformat(self.objectsById))
+        return self.uriFor(objectId)
+
+    def buildProtocol(self, addr):
+        log.debug("Building protocol on address %s" % str(addr))
+        protocol = self.protocol()
+        protocol.factory = self
+        protocol.state = "header"
+        protocol.required_message_types = [message.MSG_CONNECTOK]
+        return protocol
+
+
