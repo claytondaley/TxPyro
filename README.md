@@ -1,7 +1,7 @@
 twisted-pyro
 ============
 
-Provides a Deferred-based interface for Pyro4's built-in Async calls.
+Provides a Deferred-based interface for Pyro4's client calls and a Factory/Protocol that provides server-side Pyro4 support.
 
 This is a preliminary (alpha) effort, but feel free to use or contribute!
 
