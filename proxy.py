@@ -41,7 +41,7 @@ class _PyroDeferredMethod(_AsyncRemoteMethod):
             # If we call the callback directly, it ends up in this thread, may not be thread-safe and definitely does
             # not handle errors correctly.  Instead, leave it to reactor to initiate the process when it's ready (and
             # safe).
-            reactor.callLater(0, d.callback, None)
+            reactor.callFromThread(reactor.callLater, 0, d.callback, None)
             return response
 
         def get_future_value(_):
@@ -135,27 +135,32 @@ class PyroPatientProxy(Proxy):
         return PyroPatientProxy(uriCopy)
 
     def _pyroReconnect(self):
-        """(re)connect the proxy to the daemon containing the pyro object which the proxy is for"""
+        """(re)connect the proxy to the daemon containing the pyro object which the mod_twistmail is for"""
         log.info("(Re)connecting proxy to the daemon for %s" % self._pyroUri)
         self._pyroRelease()
         tries = self.retries
         while tries:
             try:
                 self._PyroConnect()
+                self.ns_found = True
                 return
             except (errors.CommunicationError, errors.NamingError) as e:
-                if isinstance(e, errors.CommunicationError) and self.ns_found is False:
-                    self.ns_found = True
-                    log.info("Naming Server found by %s" % self._pyroUri)
-                elif isinstance(e, errors.NamingError) and self.ns_found is True:
-                    self.ns_found = False
-                    log.info("Naming Server lost by %s" % self._pyroUri)
+                if isinstance(e, errors.CommunicationError):
+                    log.debug("... can't find Proxy Server (%d tries left)" % tries)
+                    if self.ns_found is False:
+                        self.ns_found = True
+                        log.info("Naming Server found for %s" % self._pyroUri)
+                elif isinstance(e, errors.NamingError):
+                    log.debug("... can't find Naming Server or object not registered with server (%d tries left)" % tries)
+                    if self.ns_found is True:
+                        self.ns_found = False
+                        log.info("Naming Server lost by %s" % self._pyroUri)
                 tries -= 1
                 if tries:
                     time.sleep(2)
         if self.ns_found:
             msg = "Failed to reconnect to daemon for %s" % self._pyroUri
         else:
-            msg = "Failed to reconnect to namingserver for %s" % self._pyroUri
+            msg = "Lost naming server or could not find URI for %s" % self._pyroUri
         log.error(msg)
         raise errors.ConnectionClosedError(msg)

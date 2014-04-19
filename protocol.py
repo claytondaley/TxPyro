@@ -4,6 +4,8 @@ __author__ = 'Clayton Daley'
 
 import logging
 log = logging.getLogger("twisted-pyro.server")
+log.debug("Loading Pyro Protocol module for Twisted")
+
 
 import os
 import struct
