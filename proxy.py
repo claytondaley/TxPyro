@@ -14,6 +14,9 @@ log = logging.getLogger("pyro.proxy")
 log.debug("Loading Pyro Proxy Module for Twisted")
 
 
+from Pyro4.naming import locateNS
+
+
 class PyroDeferredService(_AsyncProxyAdapter):
     """
     Pyro already offers async calls, but these calls (and all callbacks submitted to the Pyro object) run in a separate

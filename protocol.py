@@ -1,11 +1,6 @@
-from twisted.python.failure import Failure
-
-__author__ = 'Clayton Daley'
-
 import logging
 log = logging.getLogger("twisted-pyro.server")
 log.debug("Loading Pyro Protocol module for Twisted")
-
 
 import os
 import struct
@@ -21,10 +16,13 @@ from Pyro4.message import Message
 from proxy import PyroDeferredService
 
 from twisted.internet import reactor, defer
+from twisted.python.failure import Failure
 from twisted.internet.defer import Deferred, inlineCallbacks
 from twisted.internet.protocol import Protocol, Factory, ClientFactory
 
 from pprint import pformat
+
+__author__ = 'Clayton Daley'
 
 
 class Pyro4NSClientFactory(ClientFactory):
@@ -228,7 +226,6 @@ class Pyro4Protocol(Protocol):
             # will reset itself to accept the next call.
             pass
 
-
     @inlineCallbacks
     def _pyro_remote_call(self, msg):
         result = []
@@ -256,7 +253,11 @@ class Pyro4Protocol(Protocol):
                 result.append(response)
             # Return the final value
         else:
-            result = Pyro4Protocol._pyro_run_call(obj, method, vargs, kwargs)
+            result = yield Pyro4Protocol._pyro_run_call(obj, method, vargs, kwargs)
+            if isinstance(result, Failure):
+                exception = result.type(result.value)
+                exception._pyroTraceback = result.tb
+                result = exception
 
         log.debug("Returning result %s from _remote_call" % pformat(result))
         defer.returnValue(result)
