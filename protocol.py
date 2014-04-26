@@ -256,7 +256,11 @@ class Pyro4Protocol(Protocol):
                 result.append(response)
             # Return the final value
         else:
-            result = Pyro4Protocol._pyro_run_call(obj, method, vargs, kwargs)
+            result = yield Pyro4Protocol._pyro_run_call(obj, method, vargs, kwargs)
+            if isinstance(result, Failure):
+                exception = result.type(result.value)
+                exception._pyroTraceback = result.tb
+                result = exception
 
         log.debug("Returning result %s from _remote_call" % pformat(result))
         defer.returnValue(result)
