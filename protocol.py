@@ -208,7 +208,7 @@ class Pyro4Protocol(Protocol):
                         return response
                     d.addBoth(process_next_message)
             else:
-                log.debug("... appending response callbaccks.")
+                log.debug("... appending response callbacks.")
                 # If the previous call was not oneway, we maintain state on the protocol
                 log.debug("... setting state to 'response'")
                 self.state = "response"
