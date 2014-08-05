@@ -1,11 +1,6 @@
-from twisted.python.failure import Failure
-
-__author__ = 'Clayton Daley'
-
 import logging
 log = logging.getLogger("twisted-pyro.server")
 log.debug("Loading Pyro Protocol module for Twisted")
-
 
 import os
 import struct
@@ -21,10 +16,13 @@ from Pyro4.message import Message
 from proxy import PyroDeferredService
 
 from twisted.internet import reactor, defer
+from twisted.python.failure import Failure
 from twisted.internet.defer import Deferred, inlineCallbacks
 from twisted.internet.protocol import Protocol, Factory, ClientFactory
 
 from pprint import pformat
+
+__author__ = 'Clayton Daley'
 
 
 class Pyro4NSClientFactory(ClientFactory):
@@ -210,7 +208,7 @@ class Pyro4Protocol(Protocol):
                         return response
                     d.addBoth(process_next_message)
             else:
-                log.debug("... appending response callbaccks.")
+                log.debug("... appending response callbacks.")
                 # If the previous call was not oneway, we maintain state on the protocol
                 log.debug("... setting state to 'response'")
                 self.state = "response"
@@ -227,7 +225,6 @@ class Pyro4Protocol(Protocol):
             # Waiting on a ONEWAY call (with guaranteed execution order) to complete.  When it completes, the system
             # will reset itself to accept the next call.
             pass
-
 
     @inlineCallbacks
     def _pyro_remote_call(self, msg):
