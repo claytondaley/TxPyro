@@ -18,7 +18,7 @@ I was pleased to learn that Pyro4 had an async interface until I dug into the de
 This package attempts to address both issues by making deep modifications (private and mangled) to Pyro4.Proxy and its associated async classes:
  - Calls still use the standard (to Pyro4) `proxy.method()` interface but now return a `Deferred`.
  - This `Deferred` starts with a single callback (with one ignored parameter) that gets and returns the FutureResult's result (or raises the FutureResult's error).
- - To maximize thread safety, the Deferred's callback is triggered indirectly.  Specifically, Pyro's `FutureResult` object includes only one callback (run in Pyro's async thread) which calls `reactor.callLater(0, d.callback, None)`.
+ - To maximize thread safety, the Deferred's callback is triggered indirectly.  Specifically, Pyro's `FutureResult` object includes only one callback (run in Pyro's async thread) which calls `reactor.callFromThread(reactor.callLater, 0, d.callback, None)`.
  - I'm reasonably confident that this will always push the Deferred's actual callback execution into the Reactor's thread, providing thread safety.
  - In principle, the Deferred's first callback (to get the FutureResult's value) blocks, but the callback should only occur after a value (or an exception) is available locally.
  
