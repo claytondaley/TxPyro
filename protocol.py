@@ -1,6 +1,6 @@
 import logging
-log = logging.getLogger("twisted-pyro.server")
-log.debug("Loading Pyro Protocol module for Twisted")
+logger = logging.getLogger("twisted-pyro.server")
+logger.debug("Loading Pyro Protocol module for Twisted")
 
 import os
 import struct
@@ -69,9 +69,10 @@ class Pyro4Protocol(Protocol):
         """
         Handshake - should replicate Pyro4.Daemon._handshake()
         """
+        log = logger.debug
         if self.state == "server":
-            log.info("Connection made with Pyro4Protocol")
-            log.info("... attempting handshake")
+            log("Connection made with Pyro4Protocol")
+            log("... attempting handshake")
             ser = util.get_serializer("marshal")
             data = ser.dumps("ok")
             msg = Message(Pyro4.message.MSG_CONNECTOK, data, ser.serializer_id, 0, 1)
@@ -96,18 +97,19 @@ class Pyro4Protocol(Protocol):
          - data:  header parsed, waiting on amount of data requested in header
          - response:  the other end is waiting for data from us (idle state for clients)
         """
-        log.debug("Handling %d bytes of data" % len(data))
+        log = logger.debug 
+        log("Handling %d bytes of data" % len(data))
         self.data += data
         if self.state == "header" and len(self.data) >= Message.header_size:
-            log.debug("... enough data received to process header.")
+            log("... enough data received to process header.")
             # Have enough data to process headers
             self.request = Message.from_header(self.data[:Message.header_size])
             if Pyro4.config.LOGWIRE:
-                log.debug("wiredata received: msgtype=%d flags=0x%x ser=%d seq=%d data=%r" %
+                log("wiredata received: msgtype=%d flags=0x%x ser=%d seq=%d data=%r" %
                           (self.request.type, self.request.flags, self.request.serializer_id, self.request.seq, self.request.data))
             if self.required_message_types and self.request.type not in self.required_message_types:
                 err = "invalid msg type %d received" % self.request.type
-                log.error(err)
+                logger.error(err)
                 self._return_error(errors.ProtocolError(err))
             if self.request.serializer_id not in \
                     set([util.get_serializer(ser_name).serializer_id
@@ -120,7 +122,7 @@ class Pyro4Protocol(Protocol):
                 self.state = "data"
 
         if self.state == "annotations" and len(self.data) >= self.request.annotations_size:
-            log.debug("... enough data received to process annotation.")
+            log("... enough data received to process annotation.")
             self.request.annotations = {}
             annotations_data = self.data[:self.request.annotations_size]
             self.data = self.data[self.request.annotations_size:]
@@ -135,12 +137,12 @@ class Pyro4Protocol(Protocol):
             elif (b"HMAC" in self.request.annotations) != bool(Pyro4.config.HMAC_KEY):
                 # Message contains hmac and local HMAC_KEY not set, or vice versa. This is not allowed.
                 err = "hmac key config not symmetric"
-                log.warning(err)
+                logger.warning(err)
                 self._return_error(errors.SecurityError(err))
             self.state = "data"
 
         if self.state == "data" and len(self.data) >= self.request.data_size:
-            log.debug("... enough data received to process data.")
+            log("... enough data received to process data.")
             # A oneway call can be immediately followed by another call.  Otherwise, we should not receive any
             # additional data until we have sent a response
             if self.request.flags & Pyro4.message.FLAGS_ONEWAY:
@@ -174,13 +176,13 @@ class Pyro4Protocol(Protocol):
                 raise NotImplementedError("No action provided for MSG_CONNECTFAIL")
 
             elif self.request.type == message.MSG_INVOKE:
-                log.debug("Responding to invoke request.")
+                log("Responding to invoke request.")
                 # Must be a static method so the Protocol can reset after oneway messages
                 d.addCallback(self._pyro_remote_call)
                 reactor.callLater(0, d.callback, self.request)
 
             elif self.request.type == message.MSG_PING:
-                log.debug("Responding to ping request.")
+                log("Responding to ping request.")
                 reactor.callLater(0, d.callback, b"pong")
 
             elif self.request.type == message.MSG_RESULT:
@@ -188,7 +190,7 @@ class Pyro4Protocol(Protocol):
                 raise NotImplementedError("No action provided for MSG_RESULT")
 
             if self.request.flags & Pyro4.message.FLAGS_ONEWAY:
-                log.debug("... ONEWAY request, not building response.")
+                log("... ONEWAY request, not building response.")
 
                 def reraise(response):
                     if isinstance(response, Exception):
@@ -208,11 +210,11 @@ class Pyro4Protocol(Protocol):
                         return response
                     d.addBoth(process_next_message)
             else:
-                log.debug("... appending response callbacks.")
+                log("... appending response callbacks.")
                 # If the previous call was not oneway, we maintain state on the protocol
-                log.debug("... setting state to 'response'")
+                log("... setting state to 'response'")
                 self.state = "response"
-                log.debug("... adding build/send callbacks")
+                log("... adding build/send callbacks")
                 d.addCallback(self._build_response)
                 d.addCallback(self._send_response)
 
@@ -228,6 +230,7 @@ class Pyro4Protocol(Protocol):
 
     @inlineCallbacks
     def _pyro_remote_call(self, msg):
+        log = logger.debug
         result = []
 
         # Deserialize
@@ -240,12 +243,12 @@ class Pyro4Protocol(Protocol):
             kwargs = dict((str(k), kwargs[k]) for k in kwargs)
 
         # Individual or batch
-        log.debug("Searching for object %s" % str(objId))
+        log("Searching for object %s" % str(objId))
         obj = self.factory.objectsById.get(objId)
-        log.debug("Found object with type %s" % str(type(obj)))
+        log("Found object with type %s" % str(type(obj)))
         if msg.flags & Pyro4.message.FLAGS_BATCH:
             for method, vargs, kwargs in vargs:
-                log.debug("Running call %s with vargs %s and kwargs %s agasint object %s" %
+                log("Running call %s with vargs %s and kwargs %s agasint object %s" %
                           (str(method), str(vargs), str(kwargs), str(obj)))
                 response = yield Pyro4Protocol._pyro_run_call(obj, method, vargs, kwargs)
                 if isinstance(response, Exception):
@@ -259,17 +262,18 @@ class Pyro4Protocol(Protocol):
                 exception._pyroTraceback = result.tb
                 result = exception
 
-        log.debug("Returning result %s from _remote_call" % pformat(result))
+        log("Returning result %s from _remote_call" % pformat(result))
         defer.returnValue(result)
 
     @staticmethod
     def _pyro_run_call(obj, method, vargs, kwargs):
+        log = logger.debug
         try:
             method = util.resolveDottedAttribute(obj, method, Pyro4.config.DOTTEDNAMES)
             return method(*vargs, **kwargs)
         except Exception:
             xt, xv = sys.exc_info()[0:2]
-            log.debug("Exception occurred while handling request: %s", xv)
+            log("Exception occurred while handling request: %s", xv)
             tblines = util.formatTraceback(detailed=Pyro4.config.DETAILED_TRACEBACK)
             xv._pyroTraceback = tblines
             if sys.platform == "cli":
@@ -285,6 +289,7 @@ class Pyro4Protocol(Protocol):
         return d
 
     def _build_response(self, result):
+        log = logger.debug
         # Determine appropriate response type
         if self.request.type == message.MSG_PING:
             msg_type = message.MSG_PING
@@ -318,17 +323,18 @@ class Pyro4Protocol(Protocol):
         if isinstance(result, Exception):
             flags = message.FLAGS_EXCEPTION
             if Pyro4.config.LOGWIRE:
-                log.debug("daemon wiredata sending (error response): msgtype=%d flags=0x%x ser=%d seq=%d data=%r" %
+                log("daemon wiredata sending (error response): msgtype=%d flags=0x%x ser=%d seq=%d data=%r" %
                           (msg_type, flags, serializer.serializer_id, self.request.seq, data))
         elif self.request.type == message.MSG_PING or self.request.type == message.MSG_INVOKE:
             if Pyro4.config.LOGWIRE:
-                log.debug("daemon wiredata sending: msgtype=%d flags=0x%x ser=%d seq=%d data=%r" %
+                log("daemon wiredata sending: msgtype=%d flags=0x%x ser=%d seq=%d data=%r" %
                           (msg_type, flags, serializer.serializer_id, self.request.seq, data))
 
         return Message(msg_type, data, serializer.serializer_id, flags, self.request.seq)
 
     def _send_response(self, msg):
-        log.info("In state %s" % self.state)
+        log = logger.debug
+        log("In state %s" % self.state)
         if self.state != "response":
             error_msg = "Attempted to send response while protocol is not in response state)"
             raise errors.ProtocolError(error_msg)
@@ -387,7 +393,8 @@ class Pyro4Protocol(Protocol):
     """
 
     def reset(self, reset_data=False):
-        log.info("Protocol Reset")
+        log = logger.debug
+        log("Protocol Reset")
         self.request = None
         self.state = "header"
         if reset_data:
@@ -413,6 +420,7 @@ class Pyro4ServerFactory(Factory):
         known inside this daemon, it is not automatically available in a name server.
         This method returns a URI for the registered object.
         """
+        log = logger.debug
         if objectId:
             if not isinstance(objectId, basestring):
                 raise TypeError("objectId must be a string or None")
@@ -432,12 +440,13 @@ class Pyro4ServerFactory(Factory):
                 ser.register_type_replacement(type(obj), pyroObjectToAutoProxy)
         # register the object in the mapping
         self.objectsById[obj._pyroId] = obj
-        log.info("Registered object of type %s to id %s" % (type(obj), str(obj._pyroId)))
-        log.debug("objectsById is now %s" % pformat(self.objectsById))
+        logger.info("Registered object of type %s to id %s" % (type(obj), str(obj._pyroId)))
+        log("objectsById is now %s" % pformat(self.objectsById))
         return self.uriFor(objectId)
 
     def buildProtocol(self, addr):
-        log.debug("Building protocol on address %s" % str(addr))
+        log = logger.debug
+        log("Building protocol on address %s" % str(addr))
         protocol = self.protocol()
         protocol.factory = self
         protocol.state = "server"
@@ -479,6 +488,7 @@ class Pyro4ClientFactory(Factory):
         known inside this daemon, it is not automatically available in a name server.
         This method returns a URI for the registered object.
         """
+        log = logger.debug
         if objectId:
             if not isinstance(objectId, basestring):
                 raise TypeError("objectId must be a string or None")
@@ -498,12 +508,13 @@ class Pyro4ClientFactory(Factory):
                 ser.register_type_replacement(type(obj), pyroObjectToAutoProxy)
         # register the object in the mapping
         self.objectsById[obj._pyroId] = obj
-        log.info("Registered object of type %s to id %s" % (type(obj), str(obj._pyroId)))
-        log.debug("objectsById is now %s" % pformat(self.objectsById))
+        logger.info("Registered object of type %s to id %s" % (type(obj), str(obj._pyroId)))
+        log("objectsById is now %s" % pformat(self.objectsById))
         return self.uriFor(objectId)
 
     def buildProtocol(self, addr):
-        log.debug("Building protocol on address %s" % str(addr))
+        log = logger.debug
+        log("Building protocol on address %s" % str(addr))
         protocol = self.protocol()
         protocol.factory = self
         protocol.state = "header"
