@@ -8,6 +8,7 @@ import sys
 import uuid
 
 import Pyro4
+import Pyro4.core
 from Pyro4 import util, errors, message
 from Pyro4.futures import _ExceptionWrapper
 from Pyro4.core import pyroObjectToAutoProxy
@@ -106,7 +107,7 @@ class Pyro4Protocol(Protocol):
             self.request = Message.from_header(self.data[:Message.header_size])
             if Pyro4.config.LOGWIRE:
                 log("wiredata received: msgtype=%d flags=0x%x ser=%d seq=%d data=%r" %
-                          (self.request.type, self.request.flags, self.request.serializer_id, self.request.seq, self.request.data))
+                    (self.request.type, self.request.flags, self.request.serializer_id, self.request.seq, self.request.data))
             if self.required_message_types and self.request.type not in self.required_message_types:
                 err = "invalid msg type %d received" % self.request.type
                 logger.error(err)
@@ -234,48 +235,61 @@ class Pyro4Protocol(Protocol):
         result = []
 
         # Deserialize
+        request_flags = msg.flags
+        request_seq = msg.seq
         serializer = util.get_serializer_by_id(msg.serializer_id)
         objId, method, vargs, kwargs = serializer.deserializeCall(msg.data, compressed=msg.flags & Pyro4.message.FLAGS_COMPRESSED)
-
-        # Sanitize kwargs
-        if kwargs and sys.version_info < (2, 6, 5) and os.name != "java":
-            # Python before 2.6.5 doesn't accept unicode keyword arguments
-            kwargs = dict((str(k), kwargs[k]) for k in kwargs)
-
+        del msg  # invite GC to collect the object, don't wait for out-of-scope
         # Individual or batch
         log("Searching for object %s" % str(objId))
         obj = self.factory.objectsById.get(objId)
         log("Found object with type %s" % str(type(obj)))
-        if msg.flags & Pyro4.message.FLAGS_BATCH:
-            for method, vargs, kwargs in vargs:
+        if obj is not None:
+            # Sanitize kwargs
+            if kwargs and sys.version_info < (2, 6, 5) and os.name != "java":
+                # Python before 2.6.5 doesn't accept unicode keyword arguments
+                kwargs = dict((str(k), kwargs[k]) for k in kwargs)
+            if request_flags & Pyro4.message.FLAGS_BATCH:
+                for method, vargs, kwargs in vargs:
+                    log("Running call %s with vargs %s and kwargs %s agasint object %s" %
+                        (str(method), str(vargs), str(kwargs), str(obj)))
+                    response = yield self._pyro_run_call(obj, method, vargs, kwargs)
+                    if isinstance(response, Exception):
+                        response = _ExceptionWrapper(response)
+                    result.append(response)
+                # Return the final value
+            else:
                 log("Running call %s with vargs %s and kwargs %s agasint object %s" %
-                          (str(method), str(vargs), str(kwargs), str(obj)))
-                response = yield Pyro4Protocol._pyro_run_call(obj, method, vargs, kwargs)
-                if isinstance(response, Exception):
-                    response = _ExceptionWrapper(response)
-                result.append(response)
-            # Return the final value
+                    (str(method), str(vargs), str(kwargs), str(obj)))
+                if method == "__getattr__":
+                    # special case for direct attribute access (only exposed @properties are accessible)
+                    result = util.get_exposed_property_value(obj, vargs[0], only_exposed=Pyro4.config.REQUIRE_EXPOSE)
+                elif method == "__setattr__":
+                    # special case for direct attribute access (only exposed @properties are accessible)
+                    result = util.set_exposed_property_value(obj, vargs[0], vargs[1], only_exposed=Pyro4.config.REQUIRE_EXPOSE)
+                else:
+                    result = yield self._pyro_run_call(obj, method, vargs, kwargs)
+                    if isinstance(result, Failure):
+                        exception = result.type(result.value)
+                        exception._pyroTraceback = result.tb
+                        result = exception
+            log("Returning result %s from _remote_call" % pformat(result))
+            defer.returnValue(result)
         else:
-            result = yield Pyro4Protocol._pyro_run_call(obj, method, vargs, kwargs)
-            if isinstance(result, Failure):
-                exception = result.type(result.value)
-                exception._pyroTraceback = result.tb
-                result = exception
+            log("unknown object requested: %s", objId)
+            raise Pyro4.core.errors.DaemonError("unknown object")
 
-        log("Returning result %s from _remote_call" % pformat(result))
-        defer.returnValue(result)
 
     @staticmethod
     def _pyro_run_call(obj, method, vargs, kwargs):
         log = logger.debug
         try:
-            method = util.resolveDottedAttribute(obj, method, Pyro4.config.DOTTEDNAMES)
-            return method(*vargs, **kwargs)
+            method = util.getAttribute(obj, method)
+            return method(*vargs, **kwargs)  # this is the actual method call to the Pyro object
         except Exception:
             xt, xv = sys.exc_info()[0:2]
             log("Exception occurred while handling request: %s", xv)
-            tblines = util.formatTraceback(detailed=Pyro4.config.DETAILED_TRACEBACK)
-            xv._pyroTraceback = tblines
+            xv._pyroTraceback = util.formatTraceback(detailed=Pyro4.config.DETAILED_TRACEBACK)
             if sys.platform == "cli":
                 util.fixIronPythonExceptionForPickle(xv, True)  # piggyback attributes
             return xv
@@ -414,7 +428,7 @@ class Pyro4ServerFactory(Factory):
     protocol = Pyro4Protocol
     objectsById = dict()
 
-    def register(self, obj, objectId=None):
+    def register(self, obj, objectId=None, force=False):
         """
         Register a Pyro object under the given id. Note that this object is now only
         known inside this daemon, it is not automatically available in a name server.
@@ -426,10 +440,11 @@ class Pyro4ServerFactory(Factory):
                 raise TypeError("objectId must be a string or None")
         else:
             objectId = "obj_" + uuid.uuid4().hex  # generate a new objectId
-        if hasattr(obj, "_pyroId") and obj._pyroId != "":  # check for empty string is needed for Cython
-            raise errors.DaemonError("object already has a Pyro id")
-        if objectId in self.objectsById:
-            raise errors.DaemonError("object already registered with that id")
+        if not force:
+            if hasattr(obj, "_pyroId") and obj._pyroId != "":  # check for empty string is needed for Cython
+                raise errors.DaemonError("object already has a Pyro id")
+            if objectId in self.objectsById:
+                raise errors.DaemonError("an object was already registered with that id")
         # set some pyro attributes
         obj._pyroId = objectId
         obj._pyroDaemon = self
@@ -454,7 +469,14 @@ class Pyro4ServerFactory(Factory):
         return protocol
 
     def setAddress(self, host, port):
+        log = logger.debug
+        # Newer version of Pyro4 implement a DameonObject for accessing information about the daemon.  This is the
+        # first time the Factory has enough information to register this object.  If placed later (e.g. in
+        # buildProtocol), the system attempts to repeatedly create it which causes an error.
         self.locationStr = "%s:%s" % (host, port)
+        log("Adding DaemonObject at %s" % Pyro4.core.constants.DAEMON_NAME)
+        daemon_object = Pyro4.core.DaemonObject(self)
+        self.register(daemon_object, Pyro4.core.constants.DAEMON_NAME)
 
     def uriFor(self, objectOrId=None, nat=True):
         """
@@ -467,8 +489,8 @@ class Pyro4ServerFactory(Factory):
         return an URI for the internal address.
         """
         if not isinstance(objectOrId, basestring):
-            objectOrId=getattr(objectOrId, "_pyroId", None)
-            if objectOrId is None:
+            objectOrId = getattr(objectOrId, "_pyroId", None)
+            if objectOrId is None or objectOrId not in self.objectsById:
                 raise errors.DaemonError("object isn't registered")
         loc = self.locationStr
         return Pyro4.URI("PYRO:%s@%s" % (objectOrId, loc))
